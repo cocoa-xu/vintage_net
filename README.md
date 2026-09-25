@@ -174,6 +174,7 @@ internet_host_list | IP address or hostnames and ports to try to connect to for 
 regulatory_domain  | ISO 3166-1 alpha-2 country (`00` for global, `US`, etc.)
 additional_name_servers     | List of DNS servers to be used in addition to any supplied by an interface. E.g., `[{1, 1, 1, 1}, {8, 8, 8, 8}]`
 route_metric_fun   | Customize how network interfaces are prioritized by passing an MFA. See `VintageNet.Route.DefaultMetric.compute_metric/2`
+route_rule_priority | Priority of the `ip rule` entries for source address routing, from 1 to 32765. Linux picks one when unset, just below the first existing rule
 
 ## Network interface configuration
 

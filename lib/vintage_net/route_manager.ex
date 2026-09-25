@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2019 Matt Ludwigs
 # SPDX-FileCopyrightText: 2021 Benjamin Milde
 # SPDX-FileCopyrightText: 2023 Ben Murphy
+# SPDX-FileCopyrightText: 2026 Cocoa Xu
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -47,7 +48,8 @@ defmodule VintageNet.RouteManager do
           interfaces: %{VintageNet.ifname() => InterfaceInfo.t()},
           route_state: Calculator.table_indices(),
           routes: Route.entries(),
-          route_metric_fun: Route.route_metric_fun()
+          route_metric_fun: Route.route_metric_fun(),
+          rule_priority: pos_integer() | nil
         }
 
   @doc """
@@ -57,6 +59,8 @@ defmodule VintageNet.RouteManager do
 
   * `:route_metric_fun` - a 2-arity function that takes a ifname and `VintageNet.Route.InterfaceInfo`
     and returns `VintageNet.Route.metric()`. Both MFA and function forms are supported
+  * `:route_rule_priority` - the priority of the source address rules. Linux
+    picks one when this is not set
   """
   @spec start_link(keyword) :: GenServer.on_start()
   def start_link(args) do
@@ -144,6 +148,7 @@ defmodule VintageNet.RouteManager do
   @impl GenServer
   def init(args) do
     route_metric_fun = args[:route_metric_fun] |> check_compute_metric()
+    rule_priority = args[:route_rule_priority] |> check_rule_priority()
 
     # Fresh slate
     IPRoute.clear_all_routes()
@@ -154,6 +159,7 @@ defmodule VintageNet.RouteManager do
         interfaces: %{},
         route_state: Calculator.init(),
         route_metric_fun: route_metric_fun,
+        rule_priority: rule_priority,
         routes: []
       }
       |> update_route_tables()
@@ -170,6 +176,17 @@ defmodule VintageNet.RouteManager do
     )
 
     &DefaultMetric.compute_metric/2
+  end
+
+  defp check_rule_priority(nil), do: nil
+  defp check_rule_priority(priority) when priority in 1..32_765, do: priority
+
+  defp check_rule_priority(other) do
+    Logger.error(
+      "RouteManager: Expecting :route_rule_priority to be an integer from 1 to 32765, but got `#{inspect(other)}`. Letting Linux pick one instead."
+    )
+
+    nil
   end
 
   @impl GenServer
@@ -311,7 +328,7 @@ defmodule VintageNet.RouteManager do
     route_delta = List.myers_difference(state.routes, new_routes)
 
     # Update Linux's routing tables
-    Enum.each(route_delta, &handle_delta/1)
+    Enum.each(route_delta, &handle_delta(&1, state.rule_priority))
 
     # Update the global routing properties in the property table
     # NOTE: These next three calls can update zero or more entries
@@ -329,14 +346,14 @@ defmodule VintageNet.RouteManager do
     %{state | route_state: new_route_state, routes: new_routes}
   end
 
-  defp handle_delta({:eq, _anything}), do: :ok
+  defp handle_delta({:eq, _anything}, _rule_priority), do: :ok
 
-  defp handle_delta({:del, deletes}) do
+  defp handle_delta({:del, deletes}, _rule_priority) do
     Enum.each(deletes, &handle_delete/1)
   end
 
-  defp handle_delta({:ins, inserts}) do
-    Enum.each(inserts, &handle_insert/1)
+  defp handle_delta({:ins, inserts}, rule_priority) do
+    Enum.each(inserts, &handle_insert(&1, rule_priority))
   end
 
   defp handle_delete({:default_route, ifname, _default_gateway, _metric, table_index}) do
@@ -354,13 +371,16 @@ defmodule VintageNet.RouteManager do
     |> warn_on_error("clear_a_rule")
   end
 
-  defp handle_insert({:default_route, ifname, default_gateway, metric, table_index}) do
+  defp handle_insert(
+         {:default_route, ifname, default_gateway, metric, table_index},
+         _rule_priority
+       ) do
     IPRoute.add_default_route(ifname, default_gateway, metric, table_index)
     |> warn_on_error("add_default_route")
   end
 
-  defp handle_insert({:rule, table_index, address}) do
-    with {:error, reason} <- IPRoute.add_rule(address, table_index) do
+  defp handle_insert({:rule, table_index, address}, rule_priority) do
+    with {:error, reason} <- IPRoute.add_rule(address, table_index, rule_priority) do
       Logger.error("""
       Failed to update IP routing table due to #{reason}.
 
@@ -374,7 +394,10 @@ defmodule VintageNet.RouteManager do
     end
   end
 
-  defp handle_insert({:local_route, ifname, address, subnet_bits, metric, table_index}) do
+  defp handle_insert(
+         {:local_route, ifname, address, subnet_bits, metric, table_index},
+         _rule_priority
+       ) do
     if table_index == :main do
       # HACK: Delete automatically created local routes that have a 0 metric
       _ = IPRoute.clear_a_local_route(ifname, address, subnet_bits, 0, :main)

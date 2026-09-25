@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2019 Frank Hunleth
 # SPDX-FileCopyrightText: 2020 Matt Ludwigs
+# SPDX-FileCopyrightText: 2026 Cocoa Xu
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -73,12 +74,19 @@ defmodule VintageNet.Route.IPRoute do
   @doc """
   Add a source IP address -> routing table rule
   """
-  @spec add_rule(:inet.ip_address(), Route.table_index()) :: :ok | {:error, any()}
-  def add_rule(ip_address, table_index) do
+  @spec add_rule(:inet.ip_address(), Route.table_index(), pos_integer() | nil) ::
+          :ok | {:error, any()}
+  def add_rule(ip_address, table_index, priority \\ nil) do
     table_index_string = table_index_to_string(table_index)
 
-    ip_cmd(["rule", "add", "from", IP.ip_to_string(ip_address), "lookup", table_index_string])
+    ip_cmd(
+      ["rule", "add", "from", IP.ip_to_string(ip_address), "lookup", table_index_string] ++
+        priority_args(priority)
+    )
   end
+
+  defp priority_args(nil), do: []
+  defp priority_args(priority), do: ["priority", Integer.to_string(priority)]
 
   @doc """
   Clear all routes on all interfaces
